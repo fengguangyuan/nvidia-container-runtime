@@ -10,17 +10,16 @@ import (
 	"strings"
 )
 
-var envSwarmGPU *string
-
 const (
+	//	envSwarmGPU      = "DOCKER_RESOURCE_GPU"
 	envNVRequirePrefix      = "NVIDIA_REQUIRE_"
 	envLegacyCUDAVersion    = "CUDA_VERSION"
 	envNVRequireCUDA        = envNVRequirePrefix + "CUDA"
 	envNVGPU                = "NVIDIA_VISIBLE_DEVICES"
 	envNVDriverCapabilities = "NVIDIA_DRIVER_CAPABILITIES"
-	defaultCapability       = "utility"
 	allCapabilities         = "compute,compat32,graphics,utility,video"
 	envNVDisableRequire     = "NVIDIA_DISABLE_REQUIRE"
+        envGPUServer            = "GPU_SERVICE_SERVER"
 )
 
 type nvidiaConfig struct {
@@ -107,29 +106,7 @@ func loadSpec(path string) (spec *Spec) {
 	if spec.Root == nil {
 		log.Panicln("Root is empty in OCI spec")
 	}
-	return
-}
-
-func getDevices(env map[string]string) *string {
-	gpuVars := []string{envNVGPU}
-	if envSwarmGPU != nil {
-		// The Swarm resource has higher precedence.
-		gpuVars = append([]string{*envSwarmGPU}, gpuVars...)
-	}
-
-	for _, gpuVar := range gpuVars {
-		if devices, ok := env[gpuVar]; ok {
-			return &devices
-		}
-	}
-	return nil
-}
-
-func getCapabilities(env map[string]string) *string {
-	if capabilities, ok := env[envNVDriverCapabilities]; ok {
-		return &capabilities
-	}
-	return nil
+        return
 }
 
 func getRequirements(env map[string]string) []string {
@@ -145,33 +122,16 @@ func getRequirements(env map[string]string) []string {
 
 // Mimic the new CUDA images if no capabilities or devices are specified.
 func getNvidiaConfigLegacy(env map[string]string) *nvidiaConfig {
-	var devices string
-	if d := getDevices(env); d == nil {
-		// Environment variable unset: default to "all".
+	devices := env[envNVGPU]
+	if len(devices) == 0 {
 		devices = "all"
-	} else if len(*d) == 0 || *d == "void" {
-		// Environment variable empty or "void": not a GPU container.
-		return nil
-	} else {
-		// Environment variable non-empty and not "void".
-		devices = *d
 	}
 	if devices == "none" {
 		devices = ""
 	}
 
-	var capabilities string
-	if c := getCapabilities(env); c == nil {
-		// Environment variable unset: default to "all".
-		capabilities = allCapabilities
-	} else if len(*c) == 0 {
-		// Environment variable empty: use default capability.
-		capabilities = defaultCapability
-	} else {
-		// Environment variable non-empty.
-		capabilities = *c
-	}
-	if capabilities == "all" {
+	capabilities := env[envNVDriverCapabilities]
+	if len(capabilities) == 0 || capabilities == "all" {
 		capabilities = allCapabilities
 	}
 
@@ -200,26 +160,16 @@ func getNvidiaConfig(env map[string]string) *nvidiaConfig {
 		return getNvidiaConfigLegacy(env)
 	}
 
-	var devices string
-	if d := getDevices(env); d == nil || len(*d) == 0 || *d == "void" {
-		// Environment variable unset or empty or "void": not a GPU container.
+	devices, ok := env[envNVGPU]
+	if !ok {
+		// envNVGPU is unset: not a GPU container.
 		return nil
-	} else {
-		// Environment variable non-empty and not "void".
-		devices = *d
 	}
 	if devices == "none" {
 		devices = ""
 	}
 
-	var capabilities string
-	if c := getCapabilities(env); c == nil || len(*c) == 0 {
-		// Environment variable unset or set but empty: use default capability.
-		capabilities = defaultCapability
-	} else {
-		// Environment variable set and non-empty.
-		capabilities = *c
-	}
+	capabilities := env[envNVDriverCapabilities]
 	if capabilities == "all" {
 		capabilities = allCapabilities
 	}
@@ -237,7 +187,7 @@ func getNvidiaConfig(env map[string]string) *nvidiaConfig {
 	}
 }
 
-func getContainerConfig(hook HookConfig) (config containerConfig) {
+func getContainerConfig() (config *containerConfig) {
 	var h HookState
 	d := json.NewDecoder(os.Stdin)
 	if err := d.Decode(&h); err != nil {
@@ -251,9 +201,8 @@ func getContainerConfig(hook HookConfig) (config containerConfig) {
 
 	s := loadSpec(path.Join(b, "config.json"))
 
-	env := getEnvMap(s.Process.Env)
-	envSwarmGPU = hook.SwarmResource
-	return containerConfig{
+        env := getEnvMap(s.Process.Env)
+	return &containerConfig{
 		Pid:    h.Pid,
 		Rootfs: s.Root.Path,
 		Env:    env,
